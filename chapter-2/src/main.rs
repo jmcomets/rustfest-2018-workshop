@@ -36,6 +36,9 @@ extern crate tokio_core;
 extern crate tokio_io;
 extern crate tokio_stdin;
 
+use std::io;
+use std::env;
+
 use futures::{Future, Stream};
 use tokio_core::reactor::Core;
 
@@ -127,8 +130,7 @@ fn main() {
     //
     // Your task in this chapter is to write the rest of the program:
     //
-    // - Iterate over `std::env::args().skip(1)` and call `swarm.dial_to_handler()` to dial the
-    //   address.
+    // - Iterate over `std::env::args().skip(1)` and call `swarm.dial()` to dial the address.
     // - Use the `tokio-stdin` crate to read the message written on stdin, and publish each
     //   message on the network by calling `floodsub_controller.publish()`.
     //
@@ -136,10 +138,28 @@ fn main() {
     // Connect nodes B and C to A, and notice how messages sent by B or C get relayed to C or B
     // by going through A.
     //
+    let args = env::args().skip(1);
+    for arg in args {
+        let addr = arg.parse::<Multiaddr>().expect("Not a multicast address");
+        swarm_controller.dial(addr, upgr_trans_with_muxing.clone()).expect("Failed to dial");
+    }
 
     // This is a place-holder. Thanks to the `tokio-stdin` crate, create a stream that produces
     // the messages obtained from stdin, and call `for_each()` on it to obtain a future.
-    let stdin_future = futures::future::empty();
+    // let stdin_future = futures::future::empty();
+    let mut buffer = vec![];
+    let stdin_future = tokio_stdin::spawn_stdin_stream_unbounded()
+        .for_each(|byte| {
+            if byte == b'\n' {
+                floodsub_controller.publish(&topic, buffer.clone());
+                buffer.clear();
+            } else {
+                buffer.push(byte);
+            }
+
+            Ok(())
+        })
+        .map_err(|_| io::Error::new(io::ErrorKind::Other, "Standard input unavailable"));
 
     // `final_future` is a future that contains all the behaviour that we want, but nothing has
     // actually started yet. Because we created the `TcpConfig` with tokio, we need to run the
