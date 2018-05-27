@@ -33,7 +33,11 @@ extern crate libp2p;
 extern crate tokio_core;
 extern crate tokio_io;
 
+use std::io::Error as IOError;
+use std::env;
+
 use futures::{Future, Stream};
+use futures::future::{Either, Empty};
 use tokio_io::io;
 use tokio_core::reactor::Core;
 
@@ -124,10 +128,25 @@ fn main() {
     //   `futures::future::Either`, or put the futures in a `Box<Future<Item = _, Error = _>>`.
     // - You can read the documentation of libp2p by running `cargo doc --open`.
     //
+    let dialer_finished_future: Either<Box<Future<Item=(), Error=IOError>>, Empty<(), IOError>> = {
+        match env::args().nth(1) {
+            Some(addr) => {
+                let addr: Multiaddr = addr.parse().expect("Not a multicast address");
+                let dial = transport.dial(addr).expect("Failed to dial")
+                    .and_then(|(dial, _)| io::read_to_end(dial, vec![]))
+                    .map(|(_, msg)| println!("{}", String::from_utf8(msg).unwrap()));
+                Either::A(Box::new(dial))
+            }
+
+            None => {
+                Either::B(futures::future::empty())
+            }
+        }
+    };
 
     // This is a place-holder. Dial the remote and produce a future that represents the moment
     // when you've read the hello world message sent to us.
-    let dialer_finished_future = futures::future::empty();
+    // let dialer_finished_future = futures::future::empty();
 
     // `final_future` is a future that contains all the behaviour that we want ; it represents the
     // moment when the both the stream of incoming connections is over and when we finished reading
