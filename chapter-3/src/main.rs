@@ -56,6 +56,17 @@ extern crate tokio_io;
 #[macro_use]
 extern crate stdweb;
 
+
+extern crate libp2p;
+extern crate rand;
+//extern crate tokio_stdin;
+
+use futures::{Future, Stream};
+
+use libp2p::{Multiaddr, PeerId};
+use libp2p::core::Transport;
+use libp2p::floodsub::{FloodSubUpgrade, FloodSubController, TopicBuilder};
+
 mod platform;
 
 fn main() {
@@ -67,11 +78,66 @@ fn main() {
     // earlier chapters).
     let transport = platform.build_transport();
 
+    let (floodsub_upgrade, floodsub_rx) = {
+        let key = (0..2048).map(|_| rand::random::<u8>()).collect::<Vec<_>>();
+        FloodSubUpgrade::new(PeerId::from_public_key(&key))
+    };
+    let upgraded_transport = transport
+        .with_upgrade(floodsub_upgrade.clone());
+
+    let upgr_trans_with_muxing = upgraded_transport.with_dummy_muxing();
+    let (swarm_controller, swarm_future) = libp2p::swarm(
+        upgr_trans_with_muxing.clone(),
+        |future, _remote_addr| {
+            future
+        });
+
+    if cfg!(not(target_os = "emscripten")) {
+        let listen_multiaddr: Multiaddr = "/ip4/0.0.0.0/tcp/4242/ws"
+            .parse()
+            .expect("failed to parse multiaddress");
+
+        // Let's use the swarm to listen, instead of the raw transport.
+        let actual_multiaddr = swarm_controller.listen_on(listen_multiaddr).expect("failed to listen");
+        println!("Now listening on {}", actual_multiaddr);
+    }
+
+    let topic = TopicBuilder::new("workshop-chapter2-topic")
+        .build();
+
+    let floodsub_controller = FloodSubController::new(&floodsub_upgrade);
+
+    floodsub_controller.subscribe(&topic);
+
+    let floodsub_rx = floodsub_rx
+        .for_each(|msg| {
+            if let Ok(msg) = String::from_utf8(msg.data) {
+                println!("> {}", msg);
+            } else {
+                println!("Received non-utf8 message");
+            }
+
+            Ok(())
+        });
+
+    let dial_multiaddr: Multiaddr = "/ip4/127.0.0.1/tcp/4242/ws"
+        .parse()
+        .expect("failed to parse multiaddress");
+    swarm_controller.dial(dial_multiaddr, upgr_trans_with_muxing.clone()).expect("Failed to dial");
+
     // This builds a stream of messages coming from stdin.
     let stdin = platform.stdin();
 
     // Insert your code here!
+    let stdin_future = stdin.for_each(move |msg| {
+        floodsub_controller.publish(&topic, msg.into_bytes());
+
+        Ok(())
+    });
 
     // Instead of `core.run()`, use `platform.run()`.
-    //platform.run(final_future);
+    let final_future = swarm_future
+        .select(floodsub_rx).map_err(|(err, _)| err).and_then(|(_, n)| n)
+        .select(stdin_future).map_err(|(err, _)| err).and_then(|(_, n)| n);
+    platform.run(final_future);
 }
